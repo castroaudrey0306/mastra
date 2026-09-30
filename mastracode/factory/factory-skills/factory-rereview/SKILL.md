@@ -149,14 +149,14 @@ End the handoff with `Review runtime: <model>, reasoning setting: <reasoning>.`,
 
 **The head must not have moved.** Immediately before publishing, run `gh pr view <number> --json headRefOid --jq .headRefOid` and compare it with the SHA your verification ran on (`git rev-parse HEAD`). A push can land while you verify or wait on bots, and a verdict on a superseded head misleads the author. If the head moved, do not publish: refresh the checkout to the new head, review the new commits and re-run the verification they affect, revise the handoff, then check again. Name the reviewed head SHA in the handoff.
 
-Next, publish the re-review on the PR itself — this is part of every pass, not something to wait to be asked for. Write the handoff body to `.artifacts/factory-rereview/pr-<number>.md` and submit a PR review matching the verdict:
+Next, publish the re-review on the PR itself — this is part of every pass, not something to wait to be asked for. Write the handoff body to `.artifacts/factory-rereview/pr-<number>.md`, read that complete body, and call `source_control_review_change_request` with `changeRequestId: <number>` and the event matching the verdict:
 
-- approve → `gh pr review <number> --approve --body-file <file>`
-- request changes → `gh pr review <number> --request-changes --body-file <file>`
+- approve → `event: "approve"`
+- request changes → `event: "request-changes"`
 
-If GitHub rejects the review submission (e.g. the token authored the PR and cannot approve or request changes on it), fall back to `gh pr comment <number> --body-file <file>` so the verdict still lands on the PR, and report the fallback under **Verification** — how the verdict was published is an operational outcome, not an assumption.
+Pass the complete handoff as `body`. Never use `gh pr review`, `gh pr comment`, raw provider APIs, or credentials from the environment to publish it. If the provider rejects approve/request-changes because Factory's stable service identity authored the PR, retry `source_control_review_change_request` once with `event: "comment"` and the same body so the verdict still lands as an attributed review. Report the fallback under **Verification** — how the verdict was published is an operational outcome, not an assumption.
 
-After publishing, reconcile the verdict label: approve adds `status:auto-approved` and removes `status:changes-requested`; request changes adds `status:changes-requested` and removes `status:auto-approved`.
+After publishing, reconcile the verdict label with one `github_update_issue_labels` call for the PR number: approve adds `status:auto-approved` and removes `status:changes-requested`; request changes adds `status:changes-requested` and removes `status:auto-approved`.
 
 **Non-blocking follow-ups become a PR, not homework.** After publishing the re-review, if it produced non-blocking findings with concrete mechanical fixes — typos, small hardening, a supplemental test case, doc touch-ups — implement them yourself instead of leaving them as a burden on the author. Supplemental means coverage beyond what the behavior-tested gate required: a test gap that failed that gate is a requested change on the reviewed PR, never follow-up work:
 

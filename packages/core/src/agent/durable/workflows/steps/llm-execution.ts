@@ -1118,7 +1118,11 @@ export function createDurableLLMExecutionStep(_options?: DurableLLMExecutionStep
             // materialization id stable if an error processor later rotates the
             // active id before the terminal-error branch runs.
             const materializationMessageId = currentMessageId;
+            let materialized = false;
             materializeStreamedMessages = () => {
+              // Several exit paths materialize; the attempt's parts are new output only once.
+              if (materialized) return;
+              materialized = true;
               const responseModelId = currentModel.modelId ?? responseMetadata?.modelId;
               const responseTraceId = getRootExportSpan(
                 modelSpanTracker?.getTracingContext()?.currentSpan ?? tracingContext?.currentSpan,
@@ -1141,7 +1145,8 @@ export function createDurableLLMExecutionStep(_options?: DurableLLMExecutionStep
               });
               if (builtMessages.length > 0) {
                 for (const msg of builtMessages) {
-                  messageList.add(msg, 'response');
+                  // These are this attempt's newly emitted parts, not a replay of earlier steps under the same id.
+                  messageList.add(msg, 'response', { isDelta: true });
                 }
 
                 // Sync the updated messageList to the in-process registry so

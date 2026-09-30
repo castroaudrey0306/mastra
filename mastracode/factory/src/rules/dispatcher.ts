@@ -5,6 +5,7 @@ import type { AgentController, AgentControllerEventListener, Session } from '@ma
 import { RequestContext } from '@mastra/core/request-context';
 import type { SubmitPlanResumeData } from '@mastra/core/tools';
 
+import type { FactoryAuthUser } from '../auth.js';
 import {
   boardForWorkItem,
   createBoardRegistry,
@@ -285,10 +286,11 @@ function factoryRequestContext(input: {
   binding: FactoryRunBindingRecord;
   userId: string;
   orgId: string;
+  user?: FactoryAuthUser;
 }): RequestContext {
-  const { session, binding, userId, orgId } = input;
+  const { session, binding, userId, orgId, user } = input;
   const requestContext = new RequestContext();
-  requestContext.set('user', { workosId: userId, organizationId: orgId });
+  requestContext.set('user', user ? { ...user, organizationId: orgId } : { workosId: userId, organizationId: orgId });
   if (userId === 'factory-rule-dispatcher') {
     requestContext.set('factoryArtifactTrigger', { source: 'factory rule', id: binding.id });
   }
@@ -345,6 +347,8 @@ export interface FactoryDecisionDispatcherOptions {
     session: BoundDispatcherSession;
   }) => Promise<void>;
   primeCredentials?: (tenant: { orgId: string; userId: string }) => Promise<void>;
+  /** Best-effort profile lookup so unattended writes retain the human initiator's display name. */
+  resolveUser?: (tenant: { orgId: string; userId: string }) => Promise<FactoryAuthUser | null | undefined>;
   /** Injects the work item's recent comments into skill-invocation kickoffs. */
   feedReader?: FactoryFeedReader;
   resolveLinkedWorkItemParentId?: (input: {
@@ -496,6 +500,7 @@ export class FactoryDecisionDispatcher {
     session: BoundDispatcherSession;
   }) => Promise<void>;
   readonly #primeCredentials?: (tenant: { orgId: string; userId: string }) => Promise<void>;
+  readonly #resolveUser?: FactoryDecisionDispatcherOptions['resolveUser'];
   readonly #feedReader?: FactoryFeedReader;
   readonly #resolveLinkedWorkItemParentId?: FactoryDecisionDispatcherOptions['resolveLinkedWorkItemParentId'];
   readonly #maxInFlight: number;
@@ -524,6 +529,7 @@ export class FactoryDecisionDispatcher {
     this.#prepareBinding = options.prepareBinding;
     this.#refreshManagedMemorySettings = options.refreshManagedMemorySettings;
     this.#primeCredentials = options.primeCredentials;
+    this.#resolveUser = options.resolveUser;
     this.#feedReader = options.feedReader;
     this.#resolveLinkedWorkItemParentId = options.resolveLinkedWorkItemParentId;
     const maxInFlight = options.maxInFlight ?? MAX_IN_FLIGHT;
@@ -538,6 +544,26 @@ export class FactoryDecisionDispatcher {
       options.skillCompletionObservationTimeoutMs,
       SKILL_COMPLETION_OBSERVATION_TIMEOUT_MS,
     );
+  }
+
+  async #requestContext(input: {
+    session: BoundDispatcherSession;
+    binding: FactoryRunBindingRecord;
+    userId: string;
+    orgId: string;
+  }): Promise<RequestContext> {
+    let user: FactoryAuthUser | null | undefined;
+    if (input.userId !== 'factory-rule-dispatcher') {
+      try {
+        user = await this.#resolveUser?.({ orgId: input.orgId, userId: input.userId });
+      } catch (error) {
+        console.warn('[Factory dispatch] Unable to resolve the initiating user profile', {
+          userId: input.userId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return factoryRequestContext({ ...input, ...(user ? { user } : {}) });
   }
 
   start(): void {
@@ -808,7 +834,7 @@ export class FactoryDecisionDispatcher {
         await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
         const session = await this.#findSession(binding);
         if (!session) return;
-        const requestContext = factoryRequestContext({
+        const requestContext = await this.#requestContext({
           session,
           binding,
           userId: startedBy,
@@ -853,7 +879,7 @@ export class FactoryDecisionDispatcher {
           if (!startedBy) throw new Error(`Factory binding ${binding.id} has no authenticated session owner.`);
           await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
           const session = await this.#requireSession(binding);
-          const requestContext = factoryRequestContext({
+          const requestContext = await this.#requestContext({
             session,
             binding,
             userId: startedBy,
@@ -1054,7 +1080,7 @@ export class FactoryDecisionDispatcher {
         if (!startedBy) throw new Error(`Factory binding ${binding.id} has no authenticated session owner.`);
         await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
         const session = await this.#requireSession(binding);
-        const requestContext = factoryRequestContext({
+        const requestContext = await this.#requestContext({
           session,
           binding,
           userId: startedBy,
@@ -1527,7 +1553,7 @@ export class FactoryDecisionDispatcher {
           if (!startedBy) throw new Error(`Factory binding ${binding.id} has no authenticated session owner.`);
           await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
           const session = await this.#requireSession(binding);
-          const requestContext = factoryRequestContext({
+          const requestContext = await this.#requestContext({
             session,
             binding,
             userId: startedBy,
